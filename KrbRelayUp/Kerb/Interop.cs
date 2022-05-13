@@ -1,7 +1,4 @@
 ﻿using System;
-using Asn1;
-using System.Text;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using KrbRelayUp.lib.Interop;
 
@@ -1492,7 +1489,7 @@ namespace KrbRelayUp
         public static extern int NetApiBufferFree(IntPtr Buffer);
 
         [DllImport("kernel32.dll")]
-        public extern static void GetSystemTime(ref SYSTEMTIME lpSystemTime);
+        public static extern void GetSystemTime(ref SYSTEMTIME lpSystemTime);
 
         // LSA functions
 
@@ -1582,7 +1579,7 @@ namespace KrbRelayUp
         public static extern bool GetTokenInformation(
             IntPtr TokenHandle,
             TOKEN_INFORMATION_CLASS TokenInformationClass,
-            IntPtr TokenInformation,
+            out TOKEN_STATISTICS TokenInformation,
             int TokenInformationLength,
             out int ReturnLength);
 
@@ -1604,6 +1601,11 @@ namespace KrbRelayUp
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool CloseHandle(
             IntPtr hObject
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern int ResumeThread(
+            IntPtr hThread
         );
 
         [DllImport("Secur32.dll", SetLastError = false)]

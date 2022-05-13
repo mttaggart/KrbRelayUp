@@ -14,6 +14,56 @@ namespace KrbRelayUp
 {
     public class Networking
     {
+
+        public static bool GetDomainInfo()
+        {
+            // retrieves the current domain name
+            try
+            {
+                // adapted from https://www.pinvoke.net/default.aspx/netapi32.dsgetdcname
+                Interop.DOMAIN_CONTROLLER_INFO domainInfo;
+                const int ERROR_SUCCESS = 0;
+                IntPtr pDCI = IntPtr.Zero;
+
+                int val = Interop.DsGetDcName("", Options.domain, 0, "",
+                    Interop.DSGETDCNAME_FLAGS.DS_DIRECTORY_SERVICE_REQUIRED |
+                    Interop.DSGETDCNAME_FLAGS.DS_RETURN_DNS_NAME |
+                    Interop.DSGETDCNAME_FLAGS.DS_IP_REQUIRED, out pDCI);
+                if (ERROR_SUCCESS == val)
+                {
+                    domainInfo = (Interop.DOMAIN_CONTROLLER_INFO)Marshal.PtrToStructure(pDCI, typeof(Interop.DOMAIN_CONTROLLER_INFO));
+                    if (String.IsNullOrEmpty(Options.domain))
+                        Options.domain = domainInfo.DomainName;
+                    if (String.IsNullOrEmpty(Options.domainController))
+                        Options.domainController = domainInfo.DomainControllerName.Trim('\\');
+                    Interop.NetApiBufferFree(pDCI);
+                    return true;
+                }
+                else
+                {
+                    string errorMessage = new Win32Exception(val).Message;
+                    Console.WriteLine($"[-] Error 0x{val:X8} retrieving domain info : {errorMessage}");
+                    Interop.NetApiBufferFree(pDCI);
+                }
+            }
+            catch
+            { }
+            Console.WriteLine("[-] Unable to retrieve the domain information, try again with '--Domain' and '--DomainController'.");
+            return false;
+        }
+
+        public static string GetDomainDN(string domainFQDN)
+        {
+            string domainDN = "";
+            var domainComponent = domainFQDN.Split('.');
+            foreach (string dc in domainComponent)
+            {
+                domainDN += string.Concat(",DC=", dc);
+            }
+            domainDN = domainDN.TrimStart(',');
+            return domainDN;
+        }
+
         public static string GetDCName(string domainName = "")
         {
             // retrieves the current domain controller name
@@ -37,18 +87,10 @@ namespace KrbRelayUp
             }
             else
             {
-                try
-                {
-                    string pdc = System.DirectoryServices.ActiveDirectory.Domain.GetCurrentDomain().PdcRoleOwner.Name;
-                    return pdc;
-                }
-                catch
-                {
-                    string errorMessage = new Win32Exception((int)val).Message;
-                    Console.WriteLine("\r\n [X] Error {0} retrieving domain controller : {1}", val, errorMessage);
-                    Interop.NetApiBufferFree(pDCI);
-                    return "";
-                }
+                string errorMessage = new Win32Exception(val).Message;
+                Console.WriteLine($"[-] Error 0x{val:X8} retrieving domain controller : {errorMessage}");
+                Interop.NetApiBufferFree(pDCI);
+                return "";
             }
         }
 
@@ -63,7 +105,7 @@ namespace KrbRelayUp
             {
                 if (display)
                 {
-                    Console.WriteLine("[*] Using domain controller: {0}", DCName);
+                    Console.WriteLine("[+] Using domain controller: {0}", DCName);
                 }
                 return DCName;
             }
@@ -77,17 +119,17 @@ namespace KrbRelayUp
                         Console.WriteLine("[X] Error: No domain controller could be located");
                         return null;
                     }
-                    System.Net.IPAddress[] dcIPs = System.Net.Dns.GetHostAddresses(DCName);
+                    IPAddress[] dcIPs = Dns.GetHostAddresses(DCName);
 
-                    foreach (System.Net.IPAddress dcIP in dcIPs)
+                    foreach (IPAddress dcIP in dcIPs)
                     {
                         if (dcIP.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork || dcIP.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
                         {
                             if (display)
                             {
-                                Console.WriteLine("[*] Using domain controller: {0} ({1})", DCName, dcIP);
+                                Console.WriteLine("[+] Using domain controller: {0} ({1})", DCName, dcIP);
                             }
-                            return String.Format("{0}", dcIP);
+                            return $"{dcIP}";
                         }
                     }
                     Console.WriteLine("[X] Error resolving hostname '{0}' to an IP address: no IPv4 or IPv6 address found", DCName);
@@ -108,12 +150,12 @@ namespace KrbRelayUp
             {
                 try
                 {
-                    System.Net.IPHostEntry DC = System.Net.Dns.GetHostEntry(IP);
+                    IPHostEntry DC = Dns.GetHostEntry(IP);
                     return DC.HostName;
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine("[X] Error resolving IP address '{0}' to a name: {1}", IP, e.Message);
+                    Console.WriteLine($"[-] Error resolving IP address '{IP}' to a name: {e.Message}");
                     return null;
                 }
             }
@@ -122,7 +164,7 @@ namespace KrbRelayUp
 
         public static byte[] SendBytes(string server, int port, byte[] data)
         {
-            var ipEndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Parse(server), port);
+            var ipEndPoint = new IPEndPoint(IPAddress.Parse(server), port);
             try
             {
                 using (System.Net.Sockets.TcpClient client = new System.Net.Sockets.TcpClient(ipEndPoint.AddressFamily))
@@ -134,10 +176,10 @@ namespace KrbRelayUp
                     BinaryReader socketReader = new BinaryReader(client.GetStream());
                     BinaryWriter socketWriter = new BinaryWriter(client.GetStream());
 
-                    socketWriter.Write(System.Net.IPAddress.HostToNetworkOrder(data.Length));
+                    socketWriter.Write(IPAddress.HostToNetworkOrder(data.Length));
                     socketWriter.Write(data);
 
-                    int recordMark = System.Net.IPAddress.NetworkToHostOrder(socketReader.ReadInt32());
+                    int recordMark = IPAddress.NetworkToHostOrder(socketReader.ReadInt32());
                     int recordSize = recordMark & 0x7fffffff;
 
                     if ((recordMark & 0x80000000) > 0)
@@ -177,7 +219,7 @@ namespace KrbRelayUp
             return null;
         }
 
-        public static DirectoryEntry GetLdapSearchRoot(System.Net.NetworkCredential cred, string OUName, string domainController, string domain)
+        public static DirectoryEntry GetLdapSearchRoot(NetworkCredential cred, string OUName, string domainController, string domain)
         {
             DirectoryEntry directoryObject = null;
             string ldapPrefix = "";
@@ -204,7 +246,7 @@ namespace KrbRelayUp
             }
             else if (!String.IsNullOrEmpty(domain))
             {
-                ldapOu = String.Format("DC={0}", domain.Replace(".", ",DC="));
+                ldapOu = $"DC={domain.Replace(".", ",DC=")}";
             }
 
             //If no DC, domain, credentials, or OU were specified
@@ -218,17 +260,17 @@ namespace KrbRelayUp
                 string bindPath = "";
                 if (!String.IsNullOrEmpty(ldapPrefix))
                 {
-                    bindPath = String.Format("LDAP://{0}", ldapPrefix);
+                    bindPath = $"LDAP://{ldapPrefix}";
                 }
                 if (!String.IsNullOrEmpty(ldapOu))
                 {
                     if (!String.IsNullOrEmpty(bindPath))
                     {
-                        bindPath = String.Format("{0}/{1}", bindPath, ldapOu);
+                        bindPath = $"{bindPath}/{ldapOu}";
                     }
                     else
                     {
-                        bindPath = String.Format("LDAP://{0}", ldapOu);
+                        bindPath = $"LDAP://{ldapOu}";
                     }
                 }
 
@@ -238,7 +280,7 @@ namespace KrbRelayUp
             if (cred != null)
             {
                 // if we're using alternate credentials for the connection
-                string userDomain = String.Format("{0}\\{1}", cred.Domain, cred.UserName);
+                string userDomain = $"{cred.Domain}\\{cred.UserName}";
                 directoryObject.Username = userDomain;
                 directoryObject.Password = cred.Password;
 
@@ -263,7 +305,7 @@ namespace KrbRelayUp
                 //    }
                 //    else
                 //    {
-                //        Console.WriteLine("[*] Using alternate creds  : {0}", userDomain);
+                //        Console.WriteLine("[+] Using alternate creds  : {0}", userDomain);
                 //    }
                 //}
             }
@@ -276,12 +318,12 @@ namespace KrbRelayUp
             return directoryObject;
         }
 
-        public static List<IDictionary<string, Object>> GetLdapQuery(System.Net.NetworkCredential cred, string OUName, string domainController, string domain, string filter, bool ldaps = false)
+        public static List<IDictionary<string, Object>> GetLdapQuery(NetworkCredential cred, string OUName, string domainController, string domain, string filter, bool ldaps = false)
         {
             var ActiveDirectoryObjects = new List<IDictionary<string, Object>>();
             if (String.IsNullOrEmpty(domainController))
             {
-                domainController = Networking.GetDCName(domain); //if domain is null, this will try to find a DC in current user's domain
+                domainController = GetDCName(domain); //if domain is null, this will try to find a DC in current user's domain
             }
             if (String.IsNullOrEmpty(domainController))
             {
@@ -320,12 +362,12 @@ namespace KrbRelayUp
 
                 if (String.IsNullOrEmpty(OUName))
                 {
-                    OUName = String.Format("DC={0}", domain.Replace(".", ",DC="));
+                    OUName = $"DC={domain.Replace(".", ",DC=")}";
                 }
 
                 try
                 {
-                    Console.WriteLine("[*] Searching path '{0}' for '{1}'", OUName, filter);
+                    Console.WriteLine("[+] Searching path '{0}' for '{1}'", OUName, filter);
                     PageResultRequestControl pageRequestControl = new PageResultRequestControl(maxResultsToRequest);
                     PageResultResponseControl pageResponseControl;
                     SearchRequest request = new SearchRequest(OUName, filter, SearchScope.Subtree, null);
@@ -359,7 +401,7 @@ namespace KrbRelayUp
                 DirectorySearcher searcher = null;
                 try
                 {
-                    directoryObject = Networking.GetLdapSearchRoot(cred, OUName, domainController, domain);
+                    directoryObject = GetLdapSearchRoot(cred, OUName, domainController, domain);
                     searcher = new DirectorySearcher(directoryObject);
                     // enable LDAP paged search to get all results, by pages of 1000 items
                     searcher.PageSize = 1000;
@@ -383,11 +425,11 @@ namespace KrbRelayUp
                     string dirPath = directoryObject.Path;
                     if (String.IsNullOrEmpty(dirPath))
                     {
-                        Console.WriteLine("[*] Searching the current domain for '{0}'", filter);
+                        Console.WriteLine("[+] Searching the current domain for '{0}'", filter);
                     }
                     else
                     {
-                        Console.WriteLine("[*] Searching path '{0}' for '{1}'", dirPath, filter);
+                        Console.WriteLine("[+] Searching path '{0}' for '{1}'", dirPath, filter);
                     }
                 }
                 catch (DirectoryServicesCOMException ex)
@@ -447,7 +489,7 @@ namespace KrbRelayUp
         public static Dictionary<string, Dictionary<string, Object>> GetGptTmplContent(string path, string user = null, string password = null)
         {
             Dictionary<string, Dictionary<string, Object>> IniObject = new Dictionary<string, Dictionary<string, Object>>();
-            string sysvolPath = String.Format("\\\\{0}\\SYSVOL", (new System.Uri(path).Host));
+            string sysvolPath = $"\\\\{(new Uri(path).Host)}\\SYSVOL";
 
             int result = AddRemoteConnection(null, sysvolPath, user, password);
             if (result != (int)Interop.SystemErrorCodes.ERROR_SUCCESS)
@@ -455,7 +497,7 @@ namespace KrbRelayUp
                 return null;
             }
 
-            if (System.IO.File.Exists(path))
+            if (File.Exists(path))
             {
                 var content = File.ReadAllLines(path);
                 var CommentCount = 0;
@@ -504,7 +546,7 @@ namespace KrbRelayUp
             if (host != null)
             {
                 string targetComputerName = host.Trim('\\');
-                paths.Add(String.Format("\\\\{0}\\IPC$", targetComputerName));
+                paths.Add($"\\\\{targetComputerName}\\IPC$");
             }
             else
             {
@@ -518,14 +560,14 @@ namespace KrbRelayUp
 
                 NetResourceInstance.RemoteName = targetPath;
 
-                Console.WriteLine("[*] Attempting to mount: {0}", targetPath);
+                Console.WriteLine("[+] Attempting to mount: {0}", targetPath);
 
 
                 int result = Interop.WNetAddConnection2(NetResourceInstance, password, user, 4);
 
                 if (result == (int)Interop.SystemErrorCodes.ERROR_SUCCESS)
                 {
-                    Console.WriteLine("[*] {0} successfully mounted", targetPath);
+                    Console.WriteLine("[+] {0} successfully mounted", targetPath);
                 }
                 else
                 {
@@ -545,7 +587,7 @@ namespace KrbRelayUp
             if (host != null)
             {
                 string targetComputerName = host.Trim('\\');
-                paths.Add(String.Format("\\\\{0}\\IPC$", targetComputerName));
+                paths.Add($"\\\\{targetComputerName}\\IPC$");
             }
             else
             {
@@ -554,12 +596,12 @@ namespace KrbRelayUp
 
             foreach (string targetPath in paths)
             {
-                Console.WriteLine("[*] Attempting to unmount: {0}", targetPath);
+                Console.WriteLine("[+] Attempting to unmount: {0}", targetPath);
                 int result = Interop.WNetCancelConnection2(targetPath, 0, true);
 
                 if (result == 0)
                 {
-                    Console.WriteLine("[*] {0} successfully unmounted", targetPath);
+                    Console.WriteLine("[+] {0} successfully unmounted", targetPath);
                 }
                 else
                 {

